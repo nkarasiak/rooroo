@@ -1,17 +1,15 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { enableShadows, fitHeight, fitLength, seatedGroup } from './models.js';
+import { ColliderGrid } from './colliderGrid.js';
+import { generateCity } from './cityGen.js';
+import { buildCity } from './cityBuilder.js';
 
-const _colliders = [];
+let _grid = new ColliderGrid(16);
 
-export function getColliders() { return _colliders; }
+export function getColliders() { return _grid; }
 
 function addAABB(x0, y0, z0, x1, y1, z1) {
-  _colliders.push({
-    aabb: new THREE.Box3(
-      new THREE.Vector3(x0, y0, z0),
-      new THREE.Vector3(x1, y1, z1)
-    )
-  });
+  _grid.addAABB(x0, y0, z0, x1, y1, z1);
 }
 
 // ─── Procedural textures ──────────────────────────────────────────────────────
@@ -516,102 +514,62 @@ function addStorefront(scene, bx, bz, bw, bd, nx, nz, shop) {
 
 // ─── Main builder ─────────────────────────────────────────────────────────────
 
-export function buildWorld(scene, models) {
-  _colliders.length = 0;
+// Build a PBR MeshStandardMaterial from a {color,normal,rough} CC0 set.
+// (MeshStandardMaterial auto-converts to a node material under WebGPURenderer.)
+// Each key's textures back exactly one material, so per-texture repeat is safe.
+function pbrMat(set, rx, ry, extra = {}) {
+  for (const t of [set.color, set.normal, set.rough]) t.repeat.set(rx, ry);
+  return new THREE.MeshStandardMaterial({
+    map: set.color, normalMap: set.normal, roughnessMap: set.rough,
+    roughness: 1, metalness: 0, ...extra,
+  });
+}
+
+// One shared material per surface class — reused across every instanced
+// building/sidewalk so VRAM and draw setup stay flat across the whole city.
+function buildCityMaterials(tex, roadR) {
+  return {
+    asphalt:      pbrMat(tex.asphalt, roadR, roadR),
+    sidewalkTop:  pbrMat(tex.sidewalk, 6, 6),
+    sidewalkSide: stdMat(0x969088, 0.78),
+    shells: {
+      brickA:   pbrMat(tex.brickA, 3, 5),
+      brickB:   pbrMat(tex.brickB, 3, 5),
+      concrete: stdMat(0x8f8c84, 0.9),
+      glass:    pbrMat(tex.glass, 2, 3, { metalness: 0.3, roughness: 0.6, envMapIntensity: 1.2 }),
+    },
+    windowLit:  new THREE.MeshStandardMaterial({
+      color: 0xffe8a0, emissive: 0xffcc44, emissiveIntensity: 0.5,
+      roughness: 0.15, metalness: 0.2, side: THREE.DoubleSide,
+    }),
+    windowDark: new THREE.MeshStandardMaterial({
+      color: 0x1a2a40, emissive: 0x0a1020, emissiveIntensity: 0.1,
+      roughness: 0.08, metalness: 0.8, side: THREE.DoubleSide,
+    }),
+  };
+}
+
+export function buildWorld(scene, models, tex, params) {
+  _grid.clear();
   _asphaltMat = null;
 
-  // ── Road ──────────────────────────────────────────────────────────────────
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(70, 0.2, 70), getAsphaltMat());
-  ground.position.set(0, -0.1, 0);
-  ground.receiveShadow = true;
-  scene.add(ground);
+  const layout = generateCity(params);
+  const SW_TOP = layout.params.sidewalkH;   // sidewalk-slab top height
 
-  // Wet sheen over road (damp city street)
-  const wetRoad = new THREE.Mesh(
-    new THREE.PlaneGeometry(28, 28),
-    new THREE.MeshStandardMaterial({ color: 0x2233bb, roughness: 0.04, metalness: 0.12, transparent: true, opacity: 0.06 })
+  // Scale road texel density to the (large) ground plane.
+  const roadW = layout.bounds.maxX - layout.bounds.minX + layout.params.street;
+  const R = Math.max(8, Math.round(roadW / 5));
+  const materials = buildCityMaterials(tex, R);
+
+  // Reserve the centre block as an open plaza — the pigeon's starting area
+  // where all the hand-placed, pigeon-relevant dressing lives.
+  const plaza = layout.blocks.find(
+    (b) => b.gx === Math.round((layout.params.blocksX - 1) / 2) &&
+           b.gz === Math.round((layout.params.blocksZ - 1) / 2)
   );
-  wetRoad.rotation.x = -Math.PI / 2;
-  wetRoad.position.set(0, 0.005, 0);
-  scene.add(wetRoad);
+  if (plaza) plaza.lots = [];
 
-  // ── Sidewalks — 20 cm raised, multi-material (concrete top, stone sides) ──
-  // The raised side face IS the curb — no separate curb geometry needed.
-  // AABBs make surfaceY=0.20 for physics and block walk-on from road level.
-  const SW_H   = 0.40;   // slab height (−0.20 to +0.20, top at y=0.20)
-  const SW_TOP = 0.20;   // surface height above road
-  const swSideMat = stdMat(0x969088, 0.78);  // stone/concrete curb face
-
-  const sidewalkDefs = [
-    // w,   d,   cx,    cz,    rX, rZ, aabb
-    [70,   7,   0,    -17.5,  16,  2, [-35, 0, -21,  35, SW_TOP, -14]],
-    [70,   7,   0,     17.5,  16,  2, [-35, 0,  14,  35, SW_TOP,  21]],
-    [7,   70,  -17.5,  0,      2, 16, [-21, 0, -35, -14, SW_TOP,  35]],
-    [7,   70,   17.5,  0,      2, 16, [14,  0, -35,  21, SW_TOP,  35]],
-  ];
-
-  for (const [w, d, cx, cz, rX, rZ, aabb] of sidewalkDefs) {
-    const topMat = concreteTopMat(rX, rZ);
-    // Material array: [+X, -X, +Y(top), -Y(bottom), +Z, -Z]
-    const mats = [swSideMat, swSideMat, topMat, swSideMat, swSideMat, swSideMat];
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, SW_H, d), mats);
-    m.position.set(cx, 0, cz);  // center y=0 → top surface at y=+0.20
-    m.receiveShadow = true;
-    scene.add(m);
-    addAABB(...aabb);
-  }
-
-  // ── Road markings ─────────────────────────────────────────────────────────
-  const markMat = stdMat(0xc0c0a6, 0.85);
-  for (let i = -5; i <= 5; i++) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.01, 2.5), markMat);
-    m.position.set(0, 0.01, i * 4.5);
-    scene.add(m);
-  }
-
-  // Crosswalk stripes — all four approaches to the intersection
-  const crossMat = stdMat(0xc6c6ac, 0.9);
-  for (const [cz, alongX] of [[-11.5, true], [11.5, true]]) {
-    for (let i = 0; i < 6; i++) {
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.012, 5.0), crossMat);
-      stripe.position.set(-3.25 + i * 1.3, 0.01, cz);
-      scene.add(stripe);
-    }
-  }
-  for (const cx of [-11.5, 11.5]) {
-    for (let i = 0; i < 6; i++) {
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(5.0, 0.012, 0.65), crossMat);
-      stripe.position.set(cx, 0.01, -3.25 + i * 1.3);
-      scene.add(stripe);
-    }
-  }
-
-  // ── Buildings + ground-floor shops ──────────────────────────────────────────
-  // Each shop wraps the building's two faces that look onto the intersection.
-  const buildings = [
-    { w: 14, h: 22, d: 14, color: 0x8b7a5c, x: -23, z: -23, roughness: 0.82,
-      shop: { name: 'CAFÉ', frame: 0x6b3f2a, interior: 0x6b4a22, awningCss: '#b53227', awningHex: 0x8a241c, signBg: '#2a1a12', signFg: '#e8d8a8' } },
-    { w: 12, h: 18, d: 12, color: 0x7a8b9c, x:  23, z: -23, roughness: 0.65,
-      shop: { name: 'PHARMACIE', frame: 0x2f6e4a, interior: 0x3a8a5a, awningCss: '#1f8a52', awningHex: 0x186b40, signBg: '#0d3a24', signFg: '#d8ffe8' } },
-    { w: 14, h: 28, d: 14, color: 0x9c8870, x: -23, z:  23, roughness: 0.85,
-      shop: { name: 'BOULANGERIE', frame: 0x7a5a2a, interior: 0xc89a3a, awningCss: '#caa23a', awningHex: 0x9a7a28, signBg: '#3a2a10', signFg: '#fff0c0' } },
-    { w: 12, h: 20, d: 12, color: 0x6b7c60, x:  23, z:  23, roughness: 0.75,
-      shop: { name: 'PRESSE', frame: 0x2a3f6b, interior: 0x3a5a9a, awningCss: '#2f5aa0', awningHex: 0x244878, signBg: '#101f3a', signFg: '#cfe0ff' } },
-  ];
-  for (const { w, h, d, color, x, z, roughness, shop } of buildings) {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), brickMaterial(color, roughness));
-    b.position.set(x, h / 2, z);
-    b.castShadow = true;
-    b.receiveShadow = true;
-    scene.add(b);
-    _colliders.push({ mesh: b, aabb: new THREE.Box3().setFromObject(b) });
-    addWindowsOnFaces(scene, x, z, w, h, d);
-    addBuildingDetails(scene, x, z, w, h, d);
-
-    shop.signTex = makeSignTexture(shop.name, shop.signBg, shop.signFg);
-    addStorefront(scene, x, z, w, d, -Math.sign(x), 0, shop);  // face toward x=0
-    addStorefront(scene, x, z, w, d, 0, -Math.sign(z), shop);  // face toward z=0
-  }
+  buildCity(scene, _grid, layout, materials);
 
   // ── Street furniture — lamps on sidewalk (z=±15), objects with surfaceY ──
   for (const [x, z] of [[-11, -15], [11, -15], [-11, 15], [11, 15]])
@@ -630,11 +588,11 @@ export function buildWorld(scene, models) {
   const puddleMeshes = [];
 
   // Main puddle: live cube reflection captures buildings + sky (mirror finish).
-  const cubeRT = new THREE.WebGLCubeRenderTarget(128, {
+  const cubeRT = new THREE.CubeRenderTarget(128, {
     generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
   });
   const puddleCube = new THREE.CubeCamera(0.1, 60, cubeRT);
-  puddleCube.position.set(4, 0.06, 5);
+  puddleCube.position.set(4, SW_TOP + 0.06, 5);
   scene.add(puddleCube);
   const bigPuddle = new THREE.Mesh(
     new THREE.CircleGeometry(1.0, 32),
@@ -644,7 +602,7 @@ export function buildWorld(scene, models) {
     })
   );
   bigPuddle.rotation.x = -Math.PI / 2;
-  bigPuddle.position.set(4, 0.02, 5);
+  bigPuddle.position.set(4, SW_TOP + 0.02, 5);
   bigPuddle.userData.uvReflective = true;
   scene.add(bigPuddle);
   puddleMeshes.push(bigPuddle);
@@ -655,7 +613,7 @@ export function buildWorld(scene, models) {
     new THREE.MeshStandardMaterial({ color: 0x2244aa, roughness: 0.02, metalness: 0.4, transparent: true, opacity: 0.75 })
   );
   smallPuddle.rotation.x = -Math.PI / 2;
-  smallPuddle.position.set(-2.5, 0.02, -3);
+  smallPuddle.position.set(-2.5, SW_TOP + 0.02, -3);
   smallPuddle.userData.uvReflective = true;
   scene.add(smallPuddle);
   puddleMeshes.push(smallPuddle);
@@ -665,18 +623,18 @@ export function buildWorld(scene, models) {
   [[-13, -16.5, 4.6], [13, -16.5, 5.2], [-13, 16.5, 4.8], [13, 16.5, 5.0]]
     .forEach(([x, z, h], i) => addTree(scene, treeModels[i % 2], x, z, SW_TOP, h, i * 1.3));
 
-  // ── Parked cars along the curbs (road level) ────────────────────────────────
-  addCar(scene, models.car,       -6,    12.7, Math.PI / 2);
-  addCar(scene, models.carPolice,  6.5, -12.7, Math.PI / 2);
-  addCar(scene, models.car,        12.7, -4,   0);
-  addCar(scene, models.carPolice, -12.7,  5,   0);
+  // ── Parked cars on the streets bordering the plaza (road level) ─────────────
+  addCar(scene, models.car,        25, -6,  0);
+  addCar(scene, models.carPolice, -25,  6,  0);
+  addCar(scene, models.car,        -6,  25, Math.PI / 2);
+  addCar(scene, models.carPolice,   6, -25, Math.PI / 2);
 
   addFireHydrant(scene, 15, -16.5, SW_TOP);
   addFireHydrant(scene, -15, 16.5, SW_TOP);
 
-  // ── Road details ──────────────────────────────────────────────────────────
-  addManhole(scene, -3, 2);
-  addManhole(scene, 5, -8);
+  // ── Road details (on the street, road level) ────────────────────────────────
+  addManhole(scene, 24, 6);
+  addManhole(scene, -24, -6);
 
   const pebbles = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 4, 3), stdMat(0x888070, 0.95), 20);
   const pd = new THREE.Object3D();
@@ -692,6 +650,9 @@ export function buildWorld(scene, models) {
 
   // One-shot reflection capture for the puddle (call after lighting/env are set).
   return {
+    colliders: _grid,
+    bound: layout.bounds.maxX,
+    layout,
     captureReflections(renderer) {
       for (const m of puddleMeshes) m.visible = false;
       puddleCube.update(renderer, scene);

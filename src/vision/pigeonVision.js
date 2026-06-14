@@ -1,4 +1,8 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  Fn, uv, texture, float, vec2, vec3, vec4,
+  tan, atan, abs, smoothstep, positionGeometry, If,
+} from 'three/tsl';
 
 // ─── Pigeon optics ────────────────────────────────────────────────────────────
 //
@@ -32,89 +36,60 @@ const CTR_VFOV  = 60;
 // Render target: square → aspect 1:1 makes hFOV = vFOV
 const RT_SIZE = 512;
 
-// ─── Shaders ─────────────────────────────────────────────────────────────────
+// ─── Composite shader (TSL / NodeMaterial — runs on WebGPU + WebGL2 fallback) ──
+// Angular constants in radians. Camera half-FOVs are compile-time constants, so
+// their tangents are plain JS numbers folded into the node graph.
+const SIDE_OFF    = SIDE_OFFSET_DEG * Math.PI / 180;  // 90°
+const SIDE_HALF   = SIDE_HALF_DEG   * Math.PI / 180;  // 60°
+const CTR_HALF    = CTR_HALF_DEG    * Math.PI / 180;  // 30°
+const V_SIDE_HALF = SIDE_HALF;
+const V_CTR_HALF  = CTR_HALF;
 
-const VERT = /* glsl */`
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    // PlaneGeometry(2,2) vertices are already in clip-space (-1…+1)
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
+// Perspective UV mapping: angle from camera axis → texture U (tan(halfFov) constant)
+const angleToU = (angle, halfFov) => float(0.5).add(tan(angle).mul(0.5 / Math.tan(halfFov)));
 
-const FRAG = /* glsl */`
-  #define PI 3.14159265359
+// Screen V → elevation (defined by the centre camera) → texture V for a given vFOV half
+const screenVtoTexV = (sv, vHalfFov) => {
+  const elev = atan(sv.sub(0.5).mul(2.0 * Math.tan(V_CTR_HALF)));
+  return float(0.5).add(tan(elev).mul(0.5 / Math.tan(vHalfFov)));
+};
 
-  uniform sampler2D tLeft;
-  uniform sampler2D tCenter;
-  uniform sampler2D tRight;
-
-  // Angular constants in radians
-  const float SIDE_OFF  = ${(SIDE_OFFSET_DEG * Math.PI / 180).toFixed(6)};  // 90°
-  const float SIDE_HALF = ${(SIDE_HALF_DEG   * Math.PI / 180).toFixed(6)};  // 60°
-  const float CTR_HALF  = ${(CTR_HALF_DEG    * Math.PI / 180).toFixed(6)};  // 30°
-  // Vertical half-FOV for each camera (1:1 aspect → hFOV = vFOV)
-  const float V_SIDE_HALF = SIDE_HALF;
-  const float V_CTR_HALF  = CTR_HALF;
-
-  varying vec2 vUv;
-
-  // Perspective UV mapping: angle from camera axis → texture U
-  float angleToU(float angle, float halfFov) {
-    return 0.5 + 0.5 * tan(angle) / tan(halfFov);
-  }
-
-  // Screen V → elevation angle → texture V for a given camera vFOV half
-  float screenVtoTexV(float sv, float vHalfFov) {
-    // Elevation is defined by the center (reference) camera's vFOV
-    float elev = atan((sv - 0.5) * 2.0 * tan(V_CTR_HALF));
-    return 0.5 + 0.5 * tan(elev) / tan(vHalfFov);
-  }
-
-  void main() {
-    float u = vUv.x;
-    float v = vUv.y;
+// Build the composite colorNode for the three eye render targets.
+// `flipY` accounts for the WebGPU render-target origin (top-left) vs WebGL
+// (bottom-left); screenVtoTexV is odd-symmetric about 0.5, so flipping the
+// screen-space v input is equivalent to flipping the sampled texture v.
+function makeCompositeNode(rtLeft, rtCenter, rtRight, flipY) {
+  return Fn(() => {
+    const u = uv().x;
+    const v = flipY ? uv().y.oneMinus() : uv().y;
 
     // Map screen horizontal → world angle: 0→-150°, 0.5→0°, 1→+150°
-    float wAngle = (u - 0.5) * 300.0 * PI / 180.0;
+    const wAngle = u.sub(0.5).mul(300.0 * Math.PI / 180);
 
-    vec3 color = vec3(0.0);
+    // Sample all three eyes unconditionally (texture reads stay in uniform
+    // control flow — required on the WebGPU backend), then select by angle.
+    const cCenter = texture(rtCenter.texture, vec2(angleToU(wAngle, CTR_HALF), screenVtoTexV(v, V_CTR_HALF))).rgb;
+    const cLeft   = texture(rtLeft.texture,   vec2(angleToU(wAngle.add(SIDE_OFF), SIDE_HALF), screenVtoTexV(v, V_SIDE_HALF))).rgb;
+    const cRight  = texture(rtRight.texture,  vec2(angleToU(wAngle.sub(SIDE_OFF), SIDE_HALF), screenVtoTexV(v, V_SIDE_HALF))).rgb;
 
-    if (wAngle >= -CTR_HALF && wAngle <= CTR_HALF) {
-      // ── Binocular centre ──────────────────────────────────────────────────
-      float uc = angleToU(wAngle, CTR_HALF);
-      float vc = screenVtoTexV(v, V_CTR_HALF);
-      color = texture2D(tCenter, vec2(uc, vc)).rgb;
+    const color = vec3(0.0).toVar();
+    If(wAngle.greaterThanEqual(-CTR_HALF).and(wAngle.lessThanEqual(CTR_HALF)), () => {
+      color.assign(cCenter);                 // binocular centre
+    }).ElseIf(wAngle.lessThan(-CTR_HALF), () => {
+      color.assign(cLeft);                   // left monocular eye
+    }).Else(() => {
+      color.assign(cRight);                  // right monocular eye
+    });
 
-    } else if (wAngle < -CTR_HALF) {
-      // ── Left monocular eye ───────────────────────────────────────────────
-      // Left camera axis is at -SIDE_OFF from forward
-      float camAngle = wAngle + SIDE_OFF;          // angle from left-cam axis
-      float uc = angleToU(camAngle, SIDE_HALF);
-      float vc = screenVtoTexV(v, V_SIDE_HALF);
-      color = texture2D(tLeft, vec2(uc, vc)).rgb;
+    // Binocular boundary seams at world angles ±30° → screen u = 0.4 and 0.6
+    const seamFactor = float(1.0).sub(float(0.55).mul(
+      smoothstep(0.007, 0.0, abs(u.sub(0.4))).add(smoothstep(0.007, 0.0, abs(u.sub(0.6))))
+    ));
+    color.mulAssign(seamFactor);
 
-    } else {
-      // ── Right monocular eye ──────────────────────────────────────────────
-      float camAngle = wAngle - SIDE_OFF;
-      float uc = angleToU(camAngle, SIDE_HALF);
-      float vc = screenVtoTexV(v, V_SIDE_HALF);
-      color = texture2D(tRight, vec2(uc, vc)).rgb;
-    }
-
-    // ── Binocular boundary seams ─────────────────────────────────────────────
-    // Seams at world angles ±30° → screen u = 0.4 and 0.6
-    float seam1 = abs(u - 0.4);
-    float seam2 = abs(u - 0.6);
-    float seamFactor = 1.0 - 0.55 * (
-      smoothstep(0.007, 0.0, seam1) + smoothstep(0.007, 0.0, seam2)
-    );
-    color *= seamFactor;
-
-    gl_FragColor = vec4(color, 1.0);
-  }
-`;
+    return vec4(color, 1.0);
+  })();
+}
 
 // ─── Class ───────────────────────────────────────────────────────────────────
 
@@ -137,28 +112,24 @@ export class PigeonVision {
 
   _buildCameras() {
     // Square render targets → hFOV = vFOV for all cameras
-    this.rtLeft   = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE);
-    this.rtCenter = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE);
-    this.rtRight  = new THREE.WebGLRenderTarget(RT_SIZE, RT_SIZE);
+    this.rtLeft   = new THREE.RenderTarget(RT_SIZE, RT_SIZE);
+    this.rtCenter = new THREE.RenderTarget(RT_SIZE, RT_SIZE);
+    this.rtRight  = new THREE.RenderTarget(RT_SIZE, RT_SIZE);
 
     const aspect = 1.0;  // square
-    this.leftCam   = new THREE.PerspectiveCamera(SIDE_VFOV, aspect, 0.01, 200);
-    this.centerCam = new THREE.PerspectiveCamera(CTR_VFOV,  aspect, 0.01, 200);
-    this.rightCam  = new THREE.PerspectiveCamera(SIDE_VFOV, aspect, 0.01, 200);
+    this.leftCam   = new THREE.PerspectiveCamera(SIDE_VFOV, aspect, 0.01, 350);
+    this.centerCam = new THREE.PerspectiveCamera(CTR_VFOV,  aspect, 0.01, 350);
+    this.rightCam  = new THREE.PerspectiveCamera(SIDE_VFOV, aspect, 0.01, 350);
   }
 
   _buildComposite() {
-    const mat = new THREE.ShaderMaterial({
-      uniforms: {
-        tLeft:   { value: this.rtLeft.texture   },
-        tCenter: { value: this.rtCenter.texture },
-        tRight:  { value: this.rtRight.texture  },
-      },
-      vertexShader:   VERT,
-      fragmentShader: FRAG,
-      depthTest:  false,
-      depthWrite: false,
-    });
+    const mat = new THREE.NodeMaterial();
+    // PlaneGeometry(2,2) vertices are already in clip-space — bypass MVP (matches old VERT).
+    mat.vertexNode = vec4(positionGeometry.xy, 0.0, 1.0);
+    const flipY = !!this.renderer.backend?.isWebGPUBackend;
+    mat.colorNode  = makeCompositeNode(this.rtLeft, this.rtCenter, this.rtRight, flipY);
+    mat.depthTest  = false;
+    mat.depthWrite = false;
 
     const geo = new THREE.PlaneGeometry(2, 2);
     this._quadScene  = new THREE.Scene();

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { enableShadows, fitHeight, seatedGroup } from '../scene/models.js';
 
 // Quaternius pigeon authoring faces +Z; rotate so it looks the way the player walks.
@@ -29,11 +29,12 @@ const _move = new THREE.Vector3();
 const _wish = new THREE.Vector3();
 
 export class PigeonController {
-  constructor(camera, scene, colliders, audio, pigeonModel) {
+  constructor(camera, scene, colliders, audio, pigeonModel, bound = WORLD_BOUND) {
     this.camera = camera;
     this.scene = scene;
-    this.colliders = colliders;  // [{ mesh, aabb }]
+    this.colliders = colliders;  // ColliderGrid (queryXZ) — see colliderGrid.js
     this.audio = audio;
+    this.bound = bound;          // half-extent hard clamp, derived from city size
 
     this.state = State.WALKING;
     this.vel = new THREE.Vector3();
@@ -167,7 +168,7 @@ export class PigeonController {
     const px = this.pos.x;
     const pz = this.pos.z;
 
-    for (const { aabb } of this.colliders) {
+    for (const { aabb } of this.colliders.queryXZ(px, pz, BODY_RADIUS)) {
       if (px > aabb.min.x - BODY_RADIUS && px < aabb.max.x + BODY_RADIUS &&
           pz > aabb.min.z - BODY_RADIUS && pz < aabb.max.z + BODY_RADIUS) {
         // Pigeon is over this building's XZ footprint — its roof is a valid surface
@@ -285,8 +286,8 @@ export class PigeonController {
     d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;  // wrap to [-π,π]
     this._faceYaw += d * Math.min(1, dt * 12);
 
-    this.pos.x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, this.pos.x));
-    this.pos.z = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, this.pos.z));
+    this.pos.x = Math.max(-this.bound, Math.min(this.bound, this.pos.x));
+    this.pos.z = Math.max(-this.bound, Math.min(this.bound, this.pos.z));
 
     this._updateAnimation(dt);
     this._applyCamera();
@@ -303,7 +304,7 @@ export class PigeonController {
 
   _resolveXZ() {
     const p = this.pos;
-    for (const { aabb } of this.colliders) {
+    for (const { aabb } of this.colliders.queryXZ(p.x, p.z, BODY_RADIUS)) {
       // Skip if pigeon is above this surface (on top of it or flying over)
       if (p.y >= aabb.max.y + EYE_HEIGHT - 0.05) continue;
 
