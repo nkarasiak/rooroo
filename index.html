@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pigeon Sim</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #000; }
+    canvas { display: block; }
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      color: rgba(255, 255, 255, 0.85);
+      font: 13px/1.8 monospace;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+      pointer-events: none;
+    }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      font: 15px/2.2 monospace;
+      text-align: center;
+      cursor: pointer;
+    }
+    #overlay h1 { font-size: 2.2rem; margin-bottom: 0.5rem; letter-spacing: 0.1em; }
+    #overlay .sub { color: rgba(255,255,255,0.6); font-size: 12px; }
+    #overlay.hidden { display: none; }
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 12px;
+      height: 12px;
+      pointer-events: none;
+    }
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255,255,255,0.6);
+    }
+    #crosshair::before { width: 1px; height: 100%; left: 50%; }
+    #crosshair::after  { height: 1px; width: 100%; top: 50%; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div>
+      <h1>PIGEON SIM</h1>
+      <p>Click to enter pigeon mode</p>
+      <br>
+      <p>WASD — walk &nbsp;|&nbsp; SPACE — take off / flap</p>
+      <p>E — peck &nbsp;|&nbsp; V — toggle pigeon UV vision</p>
+      <p>C — toggle FPV / 3rd person &nbsp;|&nbsp; ESC — release cursor</p>
+      <br>
+      <p class="sub">Pigeons are tetrachromats — they see UV, not infrared.</p>
+      <p class="sub">Garbage bags glow in pigeon vision mode.</p>
+    </div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="hud">
+    <div id="hud-state">WALKING</div>
+    <div id="hud-vision">HUMAN VISION</div>
+    <div id="hud-camera">FPV</div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
