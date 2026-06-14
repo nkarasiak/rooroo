@@ -535,7 +535,9 @@ function buildCityMaterials(tex, roadR) {
     shells: {
       brickA:   pbrMat(tex.brickA, 3, 5),
       brickB:   pbrMat(tex.brickB, 3, 5),
-      concrete: stdMat(0x8f8c84, 0.9),
+      brickC:   pbrMat(tex.brickC, 3, 5),
+      concrete: pbrMat(tex.concrete, 2, 4),
+      plaster:  pbrMat(tex.plaster, 2, 4),
       glass:    pbrMat(tex.glass, 2, 3, { metalness: 0.3, roughness: 0.6, envMapIntensity: 1.2 }),
     },
     windowLit:  new THREE.MeshStandardMaterial({

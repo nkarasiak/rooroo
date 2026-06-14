@@ -21,7 +21,7 @@ export const DEFAULT_PARAMS = {
   downtownH:  20,   // extra height bonus toward the city centre
 };
 
-const MATERIAL_CLASSES = ['brickA', 'brickB', 'concrete', 'glass'];
+const MATERIAL_CLASSES = ['brickA', 'brickB', 'brickC', 'concrete', 'plaster', 'glass'];
 
 // Split a rect into lots by recursively cutting the longer axis.
 function subdivide(rng, rect, minLot, depth, out) {
@@ -86,8 +86,8 @@ export function generateCity(params = {}) {
         const height = Math.min(P.maxH + P.downtownH, baseH + heightBias * range(lrng, 0.3, 1));
         const tall = height > 24;
         const materialClass = tall
-          ? (chance(lrng, 0.6) ? 'glass' : 'concrete')
-          : pick(lrng, ['brickA', 'brickA', 'brickB', 'concrete']);
+          ? (chance(lrng, 0.6) ? 'glass' : pick(lrng, ['concrete', 'plaster']))
+          : pick(lrng, ['brickA', 'brickB', 'brickC', 'concrete', 'plaster']);
 
         block.lots.push({
           rect: { x0: fx0, z0: fz0, x1: fx1, z1: fz1 },

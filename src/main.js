@@ -47,7 +47,7 @@ scene.fog = new THREE.FogExp2(0xc4d6e8, 0.0045);
 
 const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.01, 350);
 
-const [models, cityTex] = await Promise.all([loadModels(), loadCityTextures()]);
+const [models, cityTex] = await Promise.all([loadModels(), loadCityTextures(renderer)]);
 const world = buildWorld(scene, models, cityTex);
 setupLighting(scene);
 
