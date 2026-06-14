@@ -221,6 +221,8 @@ function box(w, h, d, mat, x, y, z, cast = true, receive = true) {
 // ─── Scene objects ────────────────────────────────────────────────────────────
 
 // Windows on all 4 building faces
+// All windows on a building are drawn with two InstancedMesh (lit + dark)
+// instead of one mesh each — keeps draw calls flat regardless of count.
 function addWindowsOnFaces(scene, bx, bz, bw, bh, bd) {
   const litMat = new THREE.MeshStandardMaterial({
     color: 0xffe8a0, emissive: 0xffcc44, emissiveIntensity: 0.5,
@@ -232,25 +234,36 @@ function addWindowsOnFaces(scene, bx, bz, bw, bh, bd) {
   });
   const wW = 0.65, wH = 0.85, startY = 4.4, spacingY = 2.5;  // ground floor reserved for shops
   const rows = Math.max(2, Math.floor((bh - startY) / spacingY));
+  const dummy = new THREE.Object3D();
+  const lit = [], dark = [];
+
+  const place = (x, y, z, rotY) => {
+    dummy.position.set(x, y, z);
+    dummy.rotation.set(0, rotY, 0);
+    dummy.updateMatrix();
+    (Math.random() > 0.28 ? lit : dark).push(dummy.matrix.clone());
+  };
+
   for (const [fz, rotY] of [[bz + bd/2 + 0.01, 0], [bz - bd/2 - 0.01, Math.PI]]) {
     const cols = Math.max(2, Math.floor(bw / 2.5));
     const spacingX = bw / (cols + 1);
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(wW, wH), Math.random() > 0.28 ? litMat : darkMat);
-      m.position.set(bx - bw/2 + spacingX*(c+1), startY + r*spacingY, fz);
-      m.rotation.y = rotY;
-      scene.add(m);
-    }
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+      place(bx - bw/2 + spacingX*(c+1), startY + r*spacingY, fz, rotY);
   }
   for (const [fx, rotY] of [[bx - bw/2 - 0.01, -Math.PI/2], [bx + bw/2 + 0.01, Math.PI/2]]) {
     const cols = Math.max(2, Math.floor(bd / 2.5));
     const spacingZ = bd / (cols + 1);
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(wW, wH), Math.random() > 0.28 ? litMat : darkMat);
-      m.position.set(fx, startY + r*spacingY, bz - bd/2 + spacingZ*(c+1));
-      m.rotation.y = rotY;
-      scene.add(m);
-    }
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+      place(fx, startY + r*spacingY, bz - bd/2 + spacingZ*(c+1), rotY);
+  }
+
+  const geo = new THREE.PlaneGeometry(wW, wH);
+  for (const [mats, mat] of [[lit, litMat], [dark, darkMat]]) {
+    if (!mats.length) continue;
+    const im = new THREE.InstancedMesh(geo, mat, mats.length);
+    mats.forEach((m, i) => im.setMatrixAt(i, m));
+    im.instanceMatrix.needsUpdate = true;
+    scene.add(im);
   }
 }
 
@@ -469,10 +482,10 @@ function addStorefront(scene, bx, bz, bw, bd, nx, nz, shop) {
   // Glass + mullions
   const glass = new THREE.Mesh(
     new THREE.PlaneGeometry(openW, openH),
-    new THREE.MeshPhysicalMaterial({
-      color: 0xaecbe0, transmission: 0.85, thickness: 0.3, ior: 1.45,
-      roughness: 0.08, metalness: 0, envMapIntensity: 1.3,
-      transparent: true, opacity: 0.92,
+    // Cheap glass: reflective transparent standard mat (no transmission pass).
+    new THREE.MeshStandardMaterial({
+      color: 0x9fc0da, roughness: 0.06, metalness: 0.1,
+      envMapIntensity: 1.3, transparent: true, opacity: 0.35,
     })
   );
   glass.position.set(0, openCY, 0.5);
@@ -665,13 +678,17 @@ export function buildWorld(scene, models) {
   addManhole(scene, -3, 2);
   addManhole(scene, 5, -8);
 
-  const pebbleMat = stdMat(0x888070, 0.95);
+  const pebbles = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 4, 3), stdMat(0x888070, 0.95), 20);
+  const pd = new THREE.Object3D();
   for (let i = 0; i < 20; i++) {
     const r = 0.04 + Math.random() * 0.06;
-    const peb = new THREE.Mesh(new THREE.SphereGeometry(r, 4, 3), pebbleMat);
-    peb.position.set((Math.random() - 0.5) * 24, r * 0.5, (Math.random() - 0.5) * 24);
-    scene.add(peb);
+    pd.position.set((Math.random() - 0.5) * 24, r * 0.5, (Math.random() - 0.5) * 24);
+    pd.scale.setScalar(r);
+    pd.updateMatrix();
+    pebbles.setMatrixAt(i, pd.matrix);
   }
+  pebbles.instanceMatrix.needsUpdate = true;
+  scene.add(pebbles);
 
   // One-shot reflection capture for the puddle (call after lighting/env are set).
   return {

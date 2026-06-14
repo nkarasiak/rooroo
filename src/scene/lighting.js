@@ -29,7 +29,7 @@ export function setupLighting(scene) {
   const sun = new THREE.DirectionalLight(0xfff5d0, 1.4);
   sun.position.copy(sunDir).multiplyScalar(60);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.camera.near = 1;
   sun.shadow.camera.far = 140;
   sun.shadow.camera.left = -55;

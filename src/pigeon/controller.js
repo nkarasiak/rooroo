@@ -3,17 +3,30 @@ import { enableShadows, fitHeight, seatedGroup } from '../scene/models.js';
 
 // Quaternius pigeon authoring faces +Z; rotate so it looks the way the player walks.
 const PIGEON_YAW_OFFSET = -Math.PI;
-const PIGEON_HEIGHT = 0.5;   // world-units, beak-to-foot
+// 1 world unit ≈ 1 metre. Rock pigeon (Columba livia): body ~0.33 m long,
+// stands ~0.30 m tall; walks ~1.5 m/s; cruises ~16 m/s; glides ~5:1.
+const PIGEON_HEIGHT = 0.3;    // standing height, metres
 
-const WALK_SPEED = 4.5;
-const FLY_SPEED = 9;
-const FLAP_FORCE = 6.5;
-const GRAVITY = 14;
+// Calm defaults; hold Shift to reach realistic fast speeds.
+const WALK_SPEED = 1.1;          // m/s — relaxed pigeon stroll
+const WALK_RUN   = 2.6;          // m/s — scurry (Shift)
+const FLY_SPEED  = WALK_SPEED * 1.2;  // gentle flutter — barely faster than walking
+const FLY_FAST   = 4;            // m/s — committed cruise (Shift)
+const FLAP_FORCE = 3.6;       // m/s upward burst per wingbeat
+const GRAVITY = 9.8;          // m/s²
+const GLIDE_RATIO = 5;        // forward:down — pigeons glide decently
+const LIFT_RESPONSE = 3;      // how fast lift eases sink toward glide rate
 const EYE_HEIGHT = 0.28;
 const BODY_RADIUS = 0.22;
 const WORLD_BOUND = 30;
 
 const State = { WALKING: 'WALKING', FLYING: 'FLYING', PECKING: 'PECKING' };
+
+// Reused scratch vectors — avoid per-frame allocation in update()
+const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _move = new THREE.Vector3();
+const _wish = new THREE.Vector3();
 
 export class PigeonController {
   constructor(camera, scene, colliders, audio, pigeonModel) {
@@ -107,12 +120,14 @@ export class PigeonController {
     if (this.state !== State.FLYING) {
       this.state = State.FLYING;
       this.vel.y = FLAP_FORCE;
-      this.audio.flap();
+      // Slight forward nudge on takeoff (not a leap) — most lift is vertical
+      this.vel.x = -Math.sin(this.yaw) * FLY_SPEED * 0.12;
+      this.vel.z = -Math.cos(this.yaw) * FLY_SPEED * 0.12;
       // Random coo on takeoff
       if (Math.random() < 0.4) setTimeout(() => this.audio.coo(), 200);
     } else {
-      this.vel.y = Math.max(this.vel.y + 2, FLAP_FORCE * 0.6);
-      this.audio.flap();
+      // Each flap nudges up but is capped at one flap's burst — no rocketing
+      this.vel.y = Math.min(this.vel.y + FLAP_FORCE * 0.55, FLAP_FORCE);
     }
     this._updateHUD();
   }
@@ -172,16 +187,18 @@ export class PigeonController {
       }
     }
 
-    const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
-    const right   = new THREE.Vector3( Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    const forward = _fwd.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const right   = _right.set( Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    const sprint  = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
 
     if (this.state !== State.FLYING) {
       // --- WALK / PECK ---
-      const move = new THREE.Vector3();
-      if (this.keys.has('KeyW')) move.addScaledVector(forward, WALK_SPEED);
-      if (this.keys.has('KeyS')) move.addScaledVector(forward, -WALK_SPEED);
-      if (this.keys.has('KeyA')) move.addScaledVector(right, -WALK_SPEED);
-      if (this.keys.has('KeyD')) move.addScaledVector(right, WALK_SPEED);
+      const spd = sprint ? WALK_RUN : WALK_SPEED;
+      const move = _move.set(0, 0, 0);
+      if (this.keys.has('KeyW')) move.addScaledVector(forward, spd);
+      if (this.keys.has('KeyS')) move.addScaledVector(forward, -spd);
+      if (this.keys.has('KeyA')) move.addScaledVector(right, -spd);
+      if (this.keys.has('KeyD')) move.addScaledVector(right, spd);
 
       this.isMoving = move.lengthSq() > 0;
       if (this.isMoving) this.bobTime += dt * 9;
@@ -215,20 +232,26 @@ export class PigeonController {
       // --- FLY --- horizontal steering via WASD (relative to look), Space flaps up
       this.vel.y -= GRAVITY * dt;
 
-      const wish = new THREE.Vector3();
+      const wish = _wish.set(0, 0, 0);
       if (this.keys.has('KeyW')) wish.add(forward);
       if (this.keys.has('KeyS')) wish.addScaledVector(forward, -1);
       if (this.keys.has('KeyA')) wish.addScaledVector(right, -1);
       if (this.keys.has('KeyD')) wish.add(right);
 
       if (wish.lengthSq() > 0) {
-        wish.normalize().multiplyScalar(FLY_SPEED);
+        wish.normalize().multiplyScalar(sprint ? FLY_FAST : FLY_SPEED);
         this.vel.x += (wish.x - this.vel.x) * dt * 4;
         this.vel.z += (wish.z - this.vel.z) * dt * 4;
       } else {
-        this.vel.x *= 1 - dt * 1.5;
-        this.vel.z *= 1 - dt * 1.5;
+        this.vel.x *= 1 - dt * 0.6;   // gentle drag — keeps gliding momentum
+        this.vel.z *= 1 - dt * 0.6;
       }
+
+      // Glide: forward airspeed generates lift, capping the sink rate.
+      // Sink ≈ horizontalSpeed / glideRatio, so faster flight glides flatter.
+      const hSpeed = Math.hypot(this.vel.x, this.vel.z);
+      const sink = -hSpeed / GLIDE_RATIO;
+      if (this.vel.y < sink) this.vel.y += (sink - this.vel.y) * Math.min(1, dt * LIFT_RESPONSE);
 
       this.pos.addScaledVector(this.vel, dt);
       this._resolveXZ();

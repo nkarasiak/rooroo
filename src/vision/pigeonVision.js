@@ -1,10 +1,4 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
-import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ─── Pigeon optics ────────────────────────────────────────────────────────────
 //
@@ -135,7 +129,6 @@ export class PigeonVision {
 
     this._buildCameras();
     this._buildComposite();
-    this._buildBloom(scene, mainCamera);
 
     document.addEventListener('pigeonVision', (e) => {
       this.pigeonMode = e.detail;
@@ -195,36 +188,8 @@ export class PigeonVision {
     this.rightCam.rotation.z = 0;
   }
 
-  _buildBloom(scene, camera) {
-    const w = window.innerWidth, h = window.innerHeight;
-    this._composer = new EffectComposer(this.renderer);
-    this._composer.addPass(new RenderPass(scene, camera));
-
-    // Contact occlusion in corners / under cars & awnings.
-    const ssao = new SSAOPass(scene, camera, w, h);
-    ssao.kernelRadius = 6;
-    ssao.minDistance = 0.0025;
-    ssao.maxDistance = 0.06;
-    this._composer.addPass(ssao);
-
-    // Gentle glow on true highlights only (lamps, sun) — not every lit window.
-    const bloom = new UnrealBloomPass(
-      new THREE.Vector2(w, h),
-      0.12,  // strength — only true highlights (lamps) glow
-      0.4,   // radius
-      0.92   // threshold
-    );
-    this._composer.addPass(bloom);
-
-    // Very subtle distance haze blur (foreground stays crisp at pigeon eye-level).
-    const bokeh = new BokehPass(scene, camera, { focus: 4.0, aperture: 0.00018, maxblur: 0.0018 });
-    this._composer.addPass(bokeh);
-
-    this._composer.addPass(new OutputPass());
-  }
-
   resize() {
-    this._composer.setSize(window.innerWidth, window.innerHeight);
+    // Eye render targets are fixed-size; the main framebuffer is sized in main.js.
   }
 
   render() {
@@ -232,8 +197,9 @@ export class PigeonVision {
     this._strength += (target - this._strength) * 0.07;
 
     if (this._strength < 0.01) {
-      // Human mode: bloom post-processing
-      this._composer.render();
+      // Human mode: direct render (fastest path)
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.scene, this.mainCamera);
       return;
     }
 
