@@ -22,11 +22,11 @@ export function setupLighting(scene) {
   u['sunPosition'].value.copy(sunDir);
 
   // Sky/ground bounce (replaces flat ambient)
-  const hemi = new THREE.HemisphereLight(0xc8d8f0, 0x3d3020, 0.9);
+  const hemi = new THREE.HemisphereLight(0xc8d8f0, 0x3d3020, 0.5);
   scene.add(hemi);
 
   // Sun — position matches sky sun direction
-  const sun = new THREE.DirectionalLight(0xfff5d0, 2.0);
+  const sun = new THREE.DirectionalLight(0xfff5d0, 1.4);
   sun.position.copy(sunDir).multiplyScalar(60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -40,7 +40,7 @@ export function setupLighting(scene) {
   scene.add(sun);
 
   // Blue-sky fill from opposite quarter
-  const fill = new THREE.DirectionalLight(0xa0c0e8, 0.4);
+  const fill = new THREE.DirectionalLight(0xa0c0e8, 0.22);
   fill.position.set(-15, 20, -10);
   scene.add(fill);
 }

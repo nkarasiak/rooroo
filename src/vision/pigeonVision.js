@@ -210,9 +210,9 @@ export class PigeonVision {
     // Gentle glow on true highlights only (lamps, sun) — not every lit window.
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(w, h),
-      0.28,  // strength
-      0.5,   // radius
-      0.85   // threshold
+      0.12,  // strength — only true highlights (lamps) glow
+      0.4,   // radius
+      0.92   // threshold
     );
     this._composer.addPass(bloom);
 

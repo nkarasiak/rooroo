@@ -12,13 +12,13 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 0.9;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xbdd6ee);
-scene.fog = new THREE.FogExp2(0xc0d8f0, 0.007);
+scene.fog = new THREE.FogExp2(0xb4c6da, 0.003);
 
 // IBL environment map — gives correct reflections to all metallic/specular surfaces
 {

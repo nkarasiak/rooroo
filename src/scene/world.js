@@ -223,7 +223,7 @@ function box(w, h, d, mat, x, y, z, cast = true, receive = true) {
 // Windows on all 4 building faces
 function addWindowsOnFaces(scene, bx, bz, bw, bh, bd) {
   const litMat = new THREE.MeshStandardMaterial({
-    color: 0xffe8a0, emissive: 0xffcc44, emissiveIntensity: 1.0,
+    color: 0xffe8a0, emissive: 0xffcc44, emissiveIntensity: 0.5,
     roughness: 0.15, metalness: 0.2,
   });
   const darkMat = new THREE.MeshStandardMaterial({
@@ -516,7 +516,7 @@ export function buildWorld(scene, models) {
   // Wet sheen over road (damp city street)
   const wetRoad = new THREE.Mesh(
     new THREE.PlaneGeometry(28, 28),
-    new THREE.MeshStandardMaterial({ color: 0x2233bb, roughness: 0.04, metalness: 0.12, transparent: true, opacity: 0.14 })
+    new THREE.MeshStandardMaterial({ color: 0x2233bb, roughness: 0.04, metalness: 0.12, transparent: true, opacity: 0.06 })
   );
   wetRoad.rotation.x = -Math.PI / 2;
   wetRoad.position.set(0, 0.005, 0);
@@ -549,7 +549,7 @@ export function buildWorld(scene, models) {
   }
 
   // ── Road markings ─────────────────────────────────────────────────────────
-  const markMat = stdMat(0xeeeecc, 0.85);
+  const markMat = stdMat(0xc0c0a6, 0.85);
   for (let i = -5; i <= 5; i++) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.01, 2.5), markMat);
     m.position.set(0, 0.01, i * 4.5);
@@ -557,7 +557,7 @@ export function buildWorld(scene, models) {
   }
 
   // Crosswalk stripes — all four approaches to the intersection
-  const crossMat = stdMat(0xddddbc, 0.9);
+  const crossMat = stdMat(0xc6c6ac, 0.9);
   for (const [cz, alongX] of [[-11.5, true], [11.5, true]]) {
     for (let i = 0; i < 6; i++) {
       const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.012, 5.0), crossMat);
