@@ -295,17 +295,23 @@ export class PigeonController {
 function buildPigeonMesh() {
   const group = new THREE.Group();
 
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x8899aa });
-  const headMat = new THREE.MeshLambertMaterial({ color: 0x5588aa });
-  const beakMat = new THREE.MeshLambertMaterial({ color: 0xccaa44 });
-  const wingMat = new THREE.MeshLambertMaterial({ color: 0x667788 });
-  const legMat  = new THREE.MeshLambertMaterial({ color: 0xdd9955 });
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x8898b2, roughness: 0.55, metalness: 0.05 });
+  // Neck gets iridescent green-purple tinge (city pigeon chest)
+  const neckMat = new THREE.MeshStandardMaterial({
+    color: 0x4a7060, roughness: 0.4, metalness: 0.1,
+    emissive: 0x1a4020, emissiveIntensity: 0.45,
+  });
+  const headMat = new THREE.MeshStandardMaterial({ color: 0x7a8ea8, roughness: 0.5, metalness: 0.04 });
+  const beakMat = new THREE.MeshStandardMaterial({ color: 0xb89840, roughness: 0.45, metalness: 0 });
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0x6a7888, roughness: 0.65, metalness: 0.02 });
+  const legMat  = new THREE.MeshStandardMaterial({ color: 0xcc7766, roughness: 0.55, metalness: 0 });
+  const tailMat = new THREE.MeshStandardMaterial({ color: 0x708098, roughness: 0.7, metalness: 0 });
 
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), bodyMat);
   body.scale.set(1, 0.75, 1.3);
   group.add(body);
 
-  const neck = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), bodyMat);
+  const neck = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), neckMat);
   neck.position.set(0, 0.12, 0.22);
   group.add(neck);
 
@@ -318,13 +324,9 @@ function buildPigeonMesh() {
   beak.position.set(0, 0.22, 0.42);
   group.add(beak);
 
-  // Wings — stored for animation
   const wings = [];
-  for (const [side, i] of [[-1, 0], [1, 1]]) {
-    const wing = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 0.04, 0.22),
-      wingMat
-    );
+  for (const side of [-1, 1]) {
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.04, 0.22), wingMat);
     wing.position.set(side * 0.25, 0, 0);
     wing.rotation.z = side * 0.2;
     group.add(wing);
@@ -332,21 +334,13 @@ function buildPigeonMesh() {
   }
   group.userData.wings = wings;
 
-  // Tail
-  const tail = new THREE.Mesh(
-    new THREE.BoxGeometry(0.18, 0.03, 0.15),
-    new THREE.MeshLambertMaterial({ color: 0x778899 })
-  );
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.15), tailMat);
   tail.position.set(0, -0.02, -0.22);
   tail.rotation.x = 0.3;
   group.add(tail);
 
-  // Legs
   for (const lx of [-0.06, 0.06]) {
-    const leg = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.012, 0.012, 0.14, 5),
-      legMat
-    );
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.14, 5), legMat);
     leg.position.set(lx, -0.21, 0.05);
     group.add(leg);
   }

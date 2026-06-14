@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ─── Pigeon optics ────────────────────────────────────────────────────────────
 //
@@ -129,6 +133,7 @@ export class PigeonVision {
 
     this._buildCameras();
     this._buildComposite();
+    this._buildBloom(scene, mainCamera);
 
     document.addEventListener('pigeonVision', (e) => {
       this.pigeonMode = e.detail;
@@ -188,8 +193,21 @@ export class PigeonVision {
     this.rightCam.rotation.z = 0;
   }
 
+  _buildBloom(scene, camera) {
+    this._composer = new EffectComposer(this.renderer);
+    this._composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      0.50,  // strength
+      0.60,  // radius
+      0.70   // threshold — lamps (3.5 emissive) and bright windows (0.8) both bloom
+    );
+    this._composer.addPass(bloom);
+    this._composer.addPass(new OutputPass());
+  }
+
   resize() {
-    // Render targets are fixed size — no action needed on window resize
+    this._composer.setSize(window.innerWidth, window.innerHeight);
   }
 
   render() {
@@ -197,9 +215,8 @@ export class PigeonVision {
     this._strength += (target - this._strength) * 0.07;
 
     if (this._strength < 0.01) {
-      // Human mode: single render pass, no post-processing
-      this.renderer.setRenderTarget(null);
-      this.renderer.render(this.scene, this.mainCamera);
+      // Human mode: bloom post-processing
+      this._composer.render();
       return;
     }
 
