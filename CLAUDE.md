@@ -6,61 +6,70 @@ First-person phenomenological pigeon simulator. You live the ordinary life of a 
 
 ## Stack
 
-- **Three.js** (r167) — 3D rendering, scene, cameras, shadow maps, GLTFLoader, AnimationMixer
+- **Three.js** (r184) on **WebGPURenderer + TSL** — imported from `three/webgpu` and `three/tsl` (NOT bare `three` — mixing the two builds gives duplicate class identities and breaks `instanceof`/material-type checks). WebGL2 auto-fallback when `navigator.gpu` is absent.
 - **Vite** — dev server + bundler
 - Plain ES modules, no TypeScript, no framework
-- **CC0 GLB models** (Quaternius / Poly Pizza) for organic/complex props; procedural for everything parametric
+- **CC0 GLB models** (Quaternius / Poly Pizza) for organic/complex props; procedural generation for the city; **CC0 PBR textures** (ambientCG) for surfaces.
+- **KTX2 / Basis** GPU-compressed textures (`KTX2Loader` + basis transcoder in `public/basis/`).
 
 ```
-npm run dev    # dev server at localhost:5173
+npm run dev    # dev server at localhost:3000  (see vite.config.js — NOT 5173)
 npm run build  # production build
 ```
+
+**Build tools / packages used during the overhaul:**
+- `three@latest` (r184) — `npm i three@latest`.
+- `ktx` (KTX-Software v4.4) for KTX2 encoding — installed non-admin via **`scoop install ktx-software`**.
+- Texture acquisition: ambientCG CC0 sets fetched with **Python `urllib`** (the `Bash`/`curl` path is wrapped by an rtk proxy that mangles output — use Python or `rtk proxy curl`).
 
 ## Source layout
 
 ```
 src/
-  main.js                 entry point: renderer, scene, env map, model preload, render loop
+  main.js                 entry point: WebGPURenderer (await init), scene, env map,
+                          model+texture preload, setAnimationLoop render loop
   scene/
-    world.js              city block geometry + shops + AABB collider registry
-    lighting.js           sun (directional + shadows) + ambient + sky-bounce fill
+    world.js              orchestration: gen city, build material palette, plaza dressing,
+                          puddles, collider grid. Keeps prop builders + (dead) texture factories
+    cityGen.js            pure seeded layout → CityLayout (blocks → lots), renderer-agnostic
+    cityBuilder.js        CityLayout → instanced meshes (shells/windows/sidewalks) + grid colliders
+    colliderGrid.js       spatial hash over AABB colliders (queryXZ)
+    rng.js                mulberry32 seeded PRNG + hashSeed/range/pick helpers
+    textures.js           KTX2Loader → shared CC0 PBR texture registry
+    lighting.js           SkyMesh (node Preetham) + sun (shadows) + hemisphere + fill
     models.js             GLTFLoader + helpers (loadModels, fitHeight, seatedGroup)
   pigeon/
     controller.js         physics, input, state machine, camera, GLB pigeon + AnimationMixer
   vision/
-    pigeonVision.js       UV tetrachromat vision — 3-camera shader composite
+    pigeonVision.js       UV tetrachromat vision — 3-camera TSL NodeMaterial composite
   audio/
     pigeonAudio.js        procedural Web Audio: ambience, coo, peck, land
 public/
   models/                 CC0 GLB assets (pigeon, car, car_police, tree, tree_pine)
+  textures/<key>/         CC0 PBR sets as KTX2: {color,normal,rough}.ktx2
+                          (asphalt, sidewalk, brickA/B/C, concrete, plaster, glass)
+  basis/                  basis_transcoder.{js,wasm} for KTX2Loader
 index.html                HUD overlay, controls splash, CSS
 ```
 
-Scale: **1 world unit ≈ 1 metre** throughout (buildings 18–28 m, pigeon 0.3 m).
+Scale: **1 world unit ≈ 1 metre** throughout (buildings ~9–34 m, pigeon 0.3 m).
 
-## World
+## World — procedural multi-block city
 
-City intersection — single city block, ~70×70 units.
+Generated from a seed (`cityGen.js`), not hand-placed. Default 5×5 blocks, pitch 50 (blockSize 38 + street 12), centred on origin → extent ≈ ±125 (world hard-clamp = `layout.bounds`, fed to the controller; no fixed ±30 anymore).
 
-| Object | Position | Notes |
-|--------|----------|-------|
-| Asphalt road | center | 70×70, PBR (normal map), faint wet sheen |
-| 4 sidewalks | ±17.5 on each axis | 7 units wide, raised curb, concrete (normal map) |
-| 4 buildings | (±23, ±23) | brick (normal map), heights 18–28, AABB colliders, landable rooftops |
-| 4 ground-floor shops | inward faces of each building | CAFÉ / PHARMACIE / BOULANGERIE / PRESSE — glass storefront, awning, canvas sign, emissive interior |
-| 4 street lamps | (±11, ±13) | emissive bulbs + point lights |
-| 4 parked cars | along curbs | GLB (car / car_police), AABB colliders |
-| 4 trees | sidewalk corners (±13, ±16.5) | GLB (tree / tree_pine) + concrete planter AABB |
-| 2 garbage bins | (-8,-13), (8,13) | collidable cylinder AABB |
-| 3 garbage bags | near bins | **food targets** — glow in UV vision (zero-red color trick) |
-| 1 bench | (0, -15.5) | AABB seat + backrest |
-| 2 puddles | (4, 5) main, (-2.5,-3) small | main uses live CubeCamera reflection; both `uvReflective` |
-| 2 fire hydrants, 2 manholes | sidewalk / road | decoration |
-| 20 pebbles | random | single InstancedMesh |
+**Generation (`cityGen.js`, pure data):** grid of blocks → each block's inner area recursively binary-sliced into lots (Parish-Müller style) → each lot gets footprint, height (taller toward downtown centre), `materialClass`, window grid, seed. One `citySeed` + per-lot `hashSeed` so editing one lot doesn't reshuffle the city.
 
-Windows are drawn as two `InstancedMesh` per building (lit / dark) — not one mesh each — to keep draw calls flat.
+**Build (`cityBuilder.js`, instancing keeps draw count flat regardless of city size):**
+- Road: one big asphalt plane over the whole bounds.
+- Sidewalks: ONE `InstancedMesh` (unit box per block), top at y=0.2.
+- Building shells: ONE `InstancedMesh` of a unit box **per material class** (~6 classes: brickA/B/C, concrete, plaster, glass), scaled per lot. Per-instance tint via `setColorAt` breaks the clone look.
+- Windows: TWO global `InstancedMesh` (lit/dark) for the **entire city** — 2 draws total.
+- Each building + sidewalk slab registers an AABB into the `ColliderGrid`.
 
-World bound: ±30 units (hard clamp).
+**Centre block = open plaza** for the pigeon's spawn; all hand-placed pigeon-relevant dressing lives here: 4 street lamps, 2 bins, 3 garbage bags (**food targets**, UV glow via zero-red `0x009966`), bench, 4 trees (GLB + planter AABB), parked cars (on the bordering streets), fire hydrants, manholes, pebbles (single InstancedMesh), 2 puddles (main = live `CubeCamera` reflection; both `uvReflective`).
+
+Whole-city budget ≈ ~140 draws → flat as the city grows; the instanced-window pool and per-class shells are the key levers (frustum culling barely helps because pigeon vision spans ~300°).
 
 ## Pigeon physics
 
@@ -105,11 +114,13 @@ Tuned to a real rock pigeon (Columba livia). Calm by default; **hold Shift** for
 
 ## Rendering & performance
 
-Renderer: ACES filmic tone mapping (exposure 0.9), sRGB, PCF soft shadows (1024² map), PMREM sky environment map for IBL reflections, light `FogExp2`.
+`WebGPURenderer` (from `three/webgpu`): ACES filmic tone mapping (exposure 1.15), sRGB, PCF soft shadows (1024² map), PMREM sky environment map for IBL, `FogExp2` (0.0045). Camera far 350 (city extent).
 
-- **Human mode** renders directly (`renderer.render(scene, camera)`) — no post-processing.
-- **Pigeon mode** uses the 3-camera composite (below).
-- **No SSAO / bloom / DOF / transmission glass.** These were tried and removed: on integrated GPUs each was an extra full-scene render and tanked the framerate (~19→38 fps after removal). The scene is draw-call/fill-rate bound, not polygon bound (~17k tris), so the wins came from cutting passes, instancing windows/pebbles, and shrinking the shadow map — not from reducing geometry.
+- **Init is async** — `await renderer.init()` in `main.js` MUST run before PMREM, `captureReflections`, and the first render, or the GPU work fails silently (black screen). Render loop is `renderer.setAnimationLoop(...)`.
+- **Standard materials auto-convert.** `MeshStandardMaterial`/instanced/emissive/transparent all render unchanged on WebGPU — they're substituted with node equivalents at render time. Only raw `ShaderMaterial`/GLSL needs porting to TSL (the only one was the pigeon-vision composite). `MeshStandardNodeMaterial` is used where a custom `colorNode`/`normalNode` is needed.
+- `Sky` (WebGL-only GLSL) → `SkyMesh` (node Preetham); uniforms are TSL `uniform()` (`.value`).
+- **Human mode** renders directly; **pigeon mode** uses the 3-camera composite (below).
+- **Still draw-call / fill-rate bound on integrated GPUs, not polygon bound.** No SSAO/bloom/DOF/transmission (each was an extra full-scene pass — removed long ago, ~19→38 fps). **Lesson re-confirmed:** a TSL detile node (2 texture samples + 2 `mx_noise_float`) on the big ground plane crashed fps 36→1. **Per-fragment shader work over large fill area is not viable here** — any tiling-break must be per-instance / per-vertex, never per-fragment. WebGPU's win here is draw-call overhead + instancing for the city, not fill rate.
 - The hot loop reuses scratch `Vector3`s (module-level in `controller.js`) to avoid per-frame GC.
 
 ## Vision system (`pigeonVision.js`)
@@ -123,10 +134,10 @@ Pigeon tetrachromat simulation via 3-camera compositing shader.
 - Center binocular: 60° FOV, forward axis
 
 **Render pipeline:**
-1. Render `leftCam` → 512×512 RT
-2. Render `centerCam` → 512×512 RT
-3. Render `rightCam` → 512×512 RT
-4. Full-screen quad shader composites all three using perspective-correct UV mapping
+1. Render `leftCam` → 512×512 `RenderTarget`
+2. Render `centerCam` → 512×512 `RenderTarget`
+3. Render `rightCam` → 512×512 `RenderTarget`
+4. Full-screen quad **TSL `NodeMaterial`** composites all three using perspective-correct UV mapping (`colorNode` Fn; clip-space `vertexNode` to bypass MVP). All three eyes are sampled unconditionally then selected by angle — texture reads must stay in uniform control flow on WebGPU. **RT V is flipped on the WebGPU backend** (origin top-left vs WebGL bottom-left), gated by `renderer.backend.isWebGPUBackend`.
 
 **Camera sync (`_syncCameras`):**
 - `leftCam.rotation.y = mc.rotation.y + sideAngleRad` (looks left)
@@ -138,6 +149,22 @@ Pigeon tetrachromat simulation via 3-camera compositing shader.
 **UV food glow:** Garbage bags use `color: 0x009966` (zero red channel). The shader maps `uvChan = 1.0 - red` so they appear vivid in pigeon vision.
 
 **Seam softening:** hairline darkening at u=0.4 and u=0.6 (the ±30° binocular boundaries).
+
+## Textures (`textures.js`) — CC0 PBR + KTX2
+
+Eight ambientCG CC0 sets (asphalt=Asphalt031, sidewalk=Concrete047A, brickA=Bricks097, brickB=Bricks060, brickC=Bricks051, concrete=Concrete046, plaster=Plaster007, glass=Facade006), each as `color`/`normal`/`rough`. Loaded once via `KTX2Loader` and shared across all instanced geometry (one material per surface class → flat VRAM).
+
+- **KTX2 stays GPU-compressed → ~6× less VRAM** than decoded JPG/PNG. `KTX2Loader.setTranscoderPath('basis/').detectSupport(renderer)`; transcoder in `public/basis/`.
+- `colorSpace`: albedo `SRGBColorSpace`, normal/rough `NoColorSpace`. `RepeatWrapping`, anisotropy 8.
+- Materials built in `world.js#buildCityMaterials` via `pbrMat(set, repeatX, repeatY)`. The road repeat scales to the ground-plane size.
+
+**Regenerating textures** (served JPGs were deleted — KTX2 is the runtime asset):
+1. Download ambientCG zips (`https://ambientcg.com/get?file=<AssetId>_1K-JPG.zip`) via Python `urllib` (rtk mangles `curl`), extract `_Color/_NormalGL/_Roughness.jpg`.
+2. Encode (KTX-Software `ktx`, via `scoop install ktx-software`):
+   - color:  `ktx create --encode basis-lz --format R8G8B8A8_SRGB  --assign-tf srgb   --generate-mipmap in out.ktx2`
+   - rough:  `ktx create --encode basis-lz --format R8G8B8A8_UNORM --assign-tf linear --generate-mipmap in out.ktx2`
+   - normal: `ktx create --encode uastc --uastc-quality 2 --zstd 18 --format R8G8B8A8_UNORM --assign-tf linear --generate-mipmap in out.ktx2`
+   (UASTC preserves normal gradients; ETC1S/BasisLZ would band them. `--zstd` is only valid with UASTC, not BasisLZ.)
 
 ## Audio (`pigeonAudio.js`)
 
@@ -181,13 +208,15 @@ Spare clips available: `TakeOff`, `Land`, `Cooing`, `Circle`, `Left`, `Right`. `
 ## Known design decisions / gotchas
 
 - **No TypeScript** — keep it that way, file sizes are tiny
-- **AABB-only collision** — no mesh collision, deliberate (perf + simplicity)
-- **Rooftop landing** uses `_getSurfaceY()` which returns `aabb.max.y`, so any landable surface needs a collider registered via `addAABB()` or pushed to `_colliders`
-- **Garbage bags as food** use `userData.isFood = true` and `userData.uvReflective = true` — neither is consumed yet (no eat mechanic implemented)
-- **Pointer lock required** for mouse look — ESC releases, click overlay re-enters
-- **GLB models** load async in `main.js` via `loadModels()` before the world is built. Imported GLBs using `KHR_materials_pbrSpecularGlossiness` must be converted to metal-rough first (three dropped spec-gloss).
-- **Instancing**: windows and pebbles are `InstancedMesh`. Keep them that way — reverting to per-object meshes spikes draw calls and tanks framerate on integrated GPUs.
-- **No post-processing on purpose** (perf) — see Rendering section before re-adding bloom/SSAO/DOF.
+- **Import from `three/webgpu`** (and `three/tsl`) in every app module — never bare `three`. Mixing builds = duplicate class identities → broken `instanceof`/material checks.
+- **AABB-only collision via `ColliderGrid`** (spatial hash). The controller calls `this.colliders.queryXZ(x, z, BODY_RADIUS)` (NOT a full scan) in `_getSurfaceY` and `_resolveXZ`. Register colliders with `grid.addAABB(...)`; world hard-clamp comes from `layout.bounds` (passed to the controller as `bound`).
+- **Rooftop landing** uses `_getSurfaceY()` → highest `aabb.max.y` under the pigeon's XZ; every building registers a full-height AABB.
+- **Garbage bags as food** use `userData.isFood`/`uvReflective` — not consumed yet.
+- **Pointer lock required** for mouse look — ESC releases, click overlay re-enters.
+- **GLB models** load async in `main.js` via `loadModels()` (parallel with `loadCityTextures()`) before the world is built. Spec-gloss GLBs must be converted to metal-rough (three dropped `KHR_materials_pbrSpecularGlossiness`).
+- **Instancing is mandatory** for shells/windows/sidewalks/pebbles — reverting to per-object meshes spikes draw calls and tanks framerate on integrated GPUs.
+- **No post-processing, no per-fragment shader tricks on big surfaces** (perf) — see Rendering section before re-adding bloom/SSAO/DOF or shader detiling.
+- **Dead code left intentionally** in `world.js`: the old procedural Canvas texture factories (`getAsphaltMat`, `brickMaterial`, `concreteTopMat`, `normalFromLuminance`) and the single-block detail builders (`addWindowsOnFaces`, `addBuildingDetails`, `addStorefront`, `makeSignTexture`, `makeStripeTexture`) — superseded by the city builder + KTX2 textures, kept for possible storefront-on-detail-ring reuse.
 
 ## Possible next directions
 
