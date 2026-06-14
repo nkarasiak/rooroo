@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { enableShadows, fitHeight, fitLength, seatedGroup } from './models.js';
 
 const _colliders = [];
 
@@ -111,10 +112,14 @@ function concreteTopMat(repeatX, repeatZ) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatZ);
-  return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, metalness: 0 });
+  const normalMap = normalFromLuminance(canvas, repeatX, repeatZ, 1.6);
+  return new THREE.MeshStandardMaterial({
+    map: tex, normalMap, normalScale: new THREE.Vector2(0.5, 0.5),
+    roughness: 0.9, metalness: 0,
+  });
 }
 
-function makeBrickTex(hexColor) {
+function makeBrickCanvas(hexColor) {
   const W = 256, H = 128;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -135,10 +140,51 @@ function makeBrickTex(hexColor) {
     }
     row++;
   }
-  const tex = new THREE.CanvasTexture(canvas);
+  return canvas;
+}
+
+// Derive a tangent-space normal map from the luminance of a source canvas.
+// Mortar lines (dark) become recessed grooves — cheap relief with no extra assets.
+function normalFromLuminance(srcCanvas, repeatX, repeatZ, strength = 2.5) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const src = srcCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+  const lum = (x, y) => {
+    const i = (((y + h) % h) * w + ((x + w) % w)) * 4;
+    return (src[i] * 0.299 + src[i+1] * 0.587 + src[i+2] * 0.114) / 255;
+  };
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const img = octx.createImageData(w, h);
+  const d = img.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const dx = (lum(x + 1, y) - lum(x - 1, y)) * strength;
+    const dy = (lum(x, y + 1) - lum(x, y - 1)) * strength;
+    const nx = -dx, ny = -dy, nz = 1.0;
+    const len = Math.hypot(nx, ny, nz);
+    const i = (y * w + x) * 4;
+    d[i]   = (nx / len * 0.5 + 0.5) * 255;
+    d[i+1] = (ny / len * 0.5 + 0.5) * 255;
+    d[i+2] = (nz / len * 0.5 + 0.5) * 255;
+    d[i+3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(out);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(6, 14);
+  tex.repeat.set(repeatX, repeatZ);
   return tex;
+}
+
+function brickMaterial(hexColor, roughness) {
+  const canvas = makeBrickCanvas(hexColor);
+  const map = new THREE.CanvasTexture(canvas);
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(6, 14);
+  const normalMap = normalFromLuminance(canvas, 6, 14, 3.0);
+  return new THREE.MeshStandardMaterial({
+    map, normalMap, normalScale: new THREE.Vector2(0.7, 0.7),
+    roughness, metalness: 0,
+  });
 }
 
 // ─── Material helpers ─────────────────────────────────────────────────────────
@@ -184,8 +230,8 @@ function addWindowsOnFaces(scene, bx, bz, bw, bh, bd) {
     color: 0x1a2a40, emissive: 0x0a1020, emissiveIntensity: 0.1,
     roughness: 0.08, metalness: 0.8,
   });
-  const rows = Math.floor(bh / 3);
-  const wW = 0.65, wH = 0.85, startY = 1.5, spacingY = 2.5;
+  const wW = 0.65, wH = 0.85, startY = 4.4, spacingY = 2.5;  // ground floor reserved for shops
+  const rows = Math.max(2, Math.floor((bh - startY) / spacingY));
   for (const [fz, rotY] of [[bz + bd/2 + 0.01, 0], [bz - bd/2 - 0.01, Math.PI]]) {
     const cols = Math.max(2, Math.floor(bw / 2.5));
     const spacingX = bw / (cols + 1);
@@ -283,21 +329,35 @@ function addStreetLamp(scene, x, z, surfaceY = 0) {
   scene.add(light);
 }
 
-function addTree(scene, x, z, surfaceY = 0) {
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.12, 0.18, 1.8, 8),
-    stdMat(0x5a3a1a, 0.95)
-  );
-  trunk.position.set(x, surfaceY + 0.9, z);
-  trunk.castShadow = true;
-  scene.add(trunk);
-  const mats = [stdMat(0x2a5424, 0.92), stdMat(0x336628, 0.9), stdMat(0x1f4a1f, 0.93)];
-  for (const [dy, r, mi] of [[2.5, 1.2, 0], [3.35, 0.85, 1], [1.8, 0.75, 2]]) {
-    const f = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), mats[mi]);
-    f.position.set(x, surfaceY + dy, z);
-    f.castShadow = true;
-    scene.add(f);
-  }
+// GLB tree, scaled and seated, with a small concrete planter at its base.
+function addTree(scene, model, x, z, surfaceY = 0, height = 4.6, yaw = 0) {
+  const inner = model.clone(true);
+  fitHeight(inner, height);
+  inner.rotation.y = yaw;
+  enableShadows(inner);
+  const g = seatedGroup(inner);
+  g.position.set(x, surfaceY, z);
+  scene.add(g);
+
+  // Planter curb
+  const planter = box(1.3, 0.32, 1.3, stdMat(0x7a7268, 0.85), x, surfaceY + 0.16, z);
+  planter.receiveShadow = true;
+  scene.add(planter);
+  addAABB(x - 0.65, surfaceY, z - 0.65, x + 0.65, surfaceY + 0.32, z + 0.65);
+}
+
+// GLB car parked at road level, aligned to the curb, with an AABB collider.
+function addCar(scene, model, x, z, yaw, len = 4.3) {
+  const inner = model.clone(true);
+  fitLength(inner, len);
+  enableShadows(inner);
+  const g = seatedGroup(inner);
+  g.position.set(x, 0, z);
+  g.rotation.y = yaw;
+  scene.add(g);
+
+  const wb = new THREE.Box3().setFromObject(g);
+  addAABB(wb.min.x + 0.1, 0, wb.min.z + 0.1, wb.max.x - 0.1, wb.max.y, wb.max.z - 0.1);
 }
 
 function addFireHydrant(scene, x, z, surfaceY = 0) {
@@ -340,9 +400,110 @@ function addManhole(scene, x, z) {
   scene.add(ring);
 }
 
+// ─── Shop signage / awning textures ────────────────────────────────────────────
+
+function makeSignTexture(text, bg, fg) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, 512, 128);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(0, 110, 512, 18);  // base shadow
+  ctx.fillStyle = fg;
+  ctx.font = 'bold 70px Georgia, "Times New Roman", serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, 60);
+  return new THREE.CanvasTexture(c);
+}
+
+function makeStripeTexture(colA, colB) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  const n = 9;
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = i % 2 ? colA : colB;
+    ctx.fillRect(Math.round(i * 256 / n), 0, Math.ceil(256 / n), 64);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  return t;
+}
+
+// Ground-floor storefront mounted on a building wall. `nx,nz` is the unit
+// outward normal of the wall (one axis only); the shop is built in local space
+// where +Z points out toward the street, then rotated into place.
+function addStorefront(scene, bx, bz, bw, bd, nx, nz, shop) {
+  const wallHalf = nx !== 0 ? bw / 2 : bd / 2;
+  const span     = nx !== 0 ? bd : bw;
+  const storeW   = Math.min(span - 1.4, 9);
+  const FLOOR_H  = 3.4;
+
+  const g = new THREE.Group();
+  g.position.set(bx + nx * (wallHalf - 0.05), 0, bz + nz * (wallHalf - 0.05));
+  g.rotation.y = Math.atan2(nx, nz);   // local +Z → outward normal
+  scene.add(g);
+
+  const stoneMat = stdMat(shop.frame, 0.8);
+  const darkMat  = stdMat(0x20242a, 0.5, 0.4);
+  const sillMat  = stdMat(0x6a6258, 0.85);
+
+  // Knee wall / bulkhead, side pilasters, header lintel — the storefront "case"
+  g.add(box(storeW, 0.45, 0.5, sillMat, 0, 0.225, 0.25));
+  g.add(box(storeW + 0.3, 0.55, 0.6, stoneMat, 0, FLOOR_H - 0.2, 0.28, false, false));
+  for (const sx of [-1, 1])
+    g.add(box(0.4, FLOOR_H, 0.55, stoneMat, sx * (storeW / 2 + 0.05), FLOOR_H / 2, 0.26));
+
+  // Recessed interior backdrop + emissive shelves (reads as a lit shop, no lights)
+  const openW = storeW - 0.7, openH = FLOOR_H - 1.05, openCY = 0.45 + openH / 2;
+  const interiorMat = new THREE.MeshStandardMaterial({
+    color: shop.interior, emissive: shop.interior, emissiveIntensity: 0.35, roughness: 0.9,
+  });
+  g.add(box(openW, openH, 0.06, interiorMat, 0, openCY, 0.1, false, false));
+  for (let i = 0; i < 3; i++) {
+    const shelf = new THREE.MeshStandardMaterial({
+      color: shop.interior, emissive: shop.interior, emissiveIntensity: 0.6, roughness: 0.8,
+    });
+    g.add(box(openW * 0.8, 0.12, 0.12, shelf, 0, 0.8 + i * 0.7, 0.22, false, false));
+  }
+
+  // Glass + mullions
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(openW, openH),
+    new THREE.MeshPhysicalMaterial({
+      color: 0xaecbe0, transmission: 0.85, thickness: 0.3, ior: 1.45,
+      roughness: 0.08, metalness: 0, envMapIntensity: 1.3,
+      transparent: true, opacity: 0.92,
+    })
+  );
+  glass.position.set(0, openCY, 0.5);
+  g.add(glass);
+  for (const mx of [-openW / 4, 0, openW / 4])
+    g.add(box(0.05, openH, 0.08, darkMat, mx, openCY, 0.52, false, false));
+
+  // Sign on the lintel
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(storeW - 0.3, 0.5),
+    new THREE.MeshStandardMaterial({
+      map: shop.signTex, emissive: 0xffffff, emissiveMap: shop.signTex,
+      emissiveIntensity: 0.5, roughness: 0.6,
+    })
+  );
+  sign.position.set(0, FLOOR_H - 0.2, 0.59);
+  g.add(sign);
+
+  // Striped awning projecting over the sidewalk
+  const awningMat = new THREE.MeshStandardMaterial({ map: makeStripeTexture(shop.awningCss, '#f3efe6'), roughness: 0.85, side: THREE.DoubleSide });
+  const awning = new THREE.Mesh(new THREE.BoxGeometry(storeW + 0.5, 0.08, 1.3), awningMat);
+  awning.position.set(0, FLOOR_H - 0.5, 1.05);
+  awning.rotation.x = -0.32;
+  awning.castShadow = true;
+  g.add(awning);
+  g.add(box(storeW + 0.5, 0.5, 0.06, stdMat(shop.awningHex, 0.85), 0, FLOOR_H - 0.85, 1.62, false, false));
+}
+
 // ─── Main builder ─────────────────────────────────────────────────────────────
 
-export function buildWorld(scene) {
+export function buildWorld(scene, models) {
   _colliders.length = 0;
   _asphaltMat = null;
 
@@ -395,24 +556,37 @@ export function buildWorld(scene) {
     scene.add(m);
   }
 
-  // Crosswalk stripes
+  // Crosswalk stripes — all four approaches to the intersection
   const crossMat = stdMat(0xddddbc, 0.9);
-  for (let i = 0; i < 6; i++) {
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.01, 5.0), crossMat);
-    stripe.position.set(-3.25 + i * 1.3, 0.01, -11.5);
-    scene.add(stripe);
+  for (const [cz, alongX] of [[-11.5, true], [11.5, true]]) {
+    for (let i = 0; i < 6; i++) {
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.012, 5.0), crossMat);
+      stripe.position.set(-3.25 + i * 1.3, 0.01, cz);
+      scene.add(stripe);
+    }
+  }
+  for (const cx of [-11.5, 11.5]) {
+    for (let i = 0; i < 6; i++) {
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(5.0, 0.012, 0.65), crossMat);
+      stripe.position.set(cx, 0.01, -3.25 + i * 1.3);
+      scene.add(stripe);
+    }
   }
 
-  // ── Buildings ─────────────────────────────────────────────────────────────
+  // ── Buildings + ground-floor shops ──────────────────────────────────────────
+  // Each shop wraps the building's two faces that look onto the intersection.
   const buildings = [
-    { w: 14, h: 22, d: 14, color: 0x8b7a5c, x: -23, z: -23, roughness: 0.82 },
-    { w: 12, h: 18, d: 12, color: 0x7a8b9c, x:  23, z: -23, roughness: 0.65 },
-    { w: 14, h: 28, d: 14, color: 0x9c8870, x: -23, z:  23, roughness: 0.85 },
-    { w: 12, h: 20, d: 12, color: 0x6b7c60, x:  23, z:  23, roughness: 0.75 },
+    { w: 14, h: 22, d: 14, color: 0x8b7a5c, x: -23, z: -23, roughness: 0.82,
+      shop: { name: 'CAFÉ', frame: 0x6b3f2a, interior: 0x6b4a22, awningCss: '#b53227', awningHex: 0x8a241c, signBg: '#2a1a12', signFg: '#e8d8a8' } },
+    { w: 12, h: 18, d: 12, color: 0x7a8b9c, x:  23, z: -23, roughness: 0.65,
+      shop: { name: 'PHARMACIE', frame: 0x2f6e4a, interior: 0x3a8a5a, awningCss: '#1f8a52', awningHex: 0x186b40, signBg: '#0d3a24', signFg: '#d8ffe8' } },
+    { w: 14, h: 28, d: 14, color: 0x9c8870, x: -23, z:  23, roughness: 0.85,
+      shop: { name: 'BOULANGERIE', frame: 0x7a5a2a, interior: 0xc89a3a, awningCss: '#caa23a', awningHex: 0x9a7a28, signBg: '#3a2a10', signFg: '#fff0c0' } },
+    { w: 12, h: 20, d: 12, color: 0x6b7c60, x:  23, z:  23, roughness: 0.75,
+      shop: { name: 'PRESSE', frame: 0x2a3f6b, interior: 0x3a5a9a, awningCss: '#2f5aa0', awningHex: 0x244878, signBg: '#101f3a', signFg: '#cfe0ff' } },
   ];
-  for (const { w, h, d, color, x, z, roughness } of buildings) {
-    const bmat = new THREE.MeshStandardMaterial({ map: makeBrickTex(color), roughness, metalness: 0 });
-    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bmat);
+  for (const { w, h, d, color, x, z, roughness, shop } of buildings) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), brickMaterial(color, roughness));
     b.position.set(x, h / 2, z);
     b.castShadow = true;
     b.receiveShadow = true;
@@ -420,6 +594,10 @@ export function buildWorld(scene) {
     _colliders.push({ mesh: b, aabb: new THREE.Box3().setFromObject(b) });
     addWindowsOnFaces(scene, x, z, w, h, d);
     addBuildingDetails(scene, x, z, w, h, d);
+
+    shop.signTex = makeSignTexture(shop.name, shop.signBg, shop.signFg);
+    addStorefront(scene, x, z, w, d, -Math.sign(x), 0, shop);  // face toward x=0
+    addStorefront(scene, x, z, w, d, 0, -Math.sign(z), shop);  // face toward z=0
   }
 
   // ── Street furniture — lamps on sidewalk (z=±15), objects with surfaceY ──
@@ -436,20 +614,49 @@ export function buildWorld(scene) {
   addBench(scene, 0, -15.5, SW_TOP);
 
   // ── Puddles ───────────────────────────────────────────────────────────────
-  for (const [px, pz, pr] of [[4, 5, 1.0], [-2.5, -3, 0.55]]) {
-    const puddle = new THREE.Mesh(
-      new THREE.CircleGeometry(pr, 20),
-      new THREE.MeshStandardMaterial({ color: 0x2244aa, roughness: 0.02, metalness: 0.35, transparent: true, opacity: 0.75 })
-    );
-    puddle.rotation.x = -Math.PI / 2;
-    puddle.position.set(px, 0.02, pz);
-    puddle.userData.uvReflective = true;
-    scene.add(puddle);
-  }
+  const puddleMeshes = [];
+
+  // Main puddle: live cube reflection captures buildings + sky (mirror finish).
+  const cubeRT = new THREE.WebGLCubeRenderTarget(128, {
+    generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
+  });
+  const puddleCube = new THREE.CubeCamera(0.1, 60, cubeRT);
+  puddleCube.position.set(4, 0.06, 5);
+  scene.add(puddleCube);
+  const bigPuddle = new THREE.Mesh(
+    new THREE.CircleGeometry(1.0, 32),
+    new THREE.MeshStandardMaterial({
+      color: 0x222d3c, roughness: 0.03, metalness: 1.0,
+      envMap: cubeRT.texture, transparent: true, opacity: 0.9,
+    })
+  );
+  bigPuddle.rotation.x = -Math.PI / 2;
+  bigPuddle.position.set(4, 0.02, 5);
+  bigPuddle.userData.uvReflective = true;
+  scene.add(bigPuddle);
+  puddleMeshes.push(bigPuddle);
+
+  // Secondary puddle reflects the sky via scene.environment.
+  const smallPuddle = new THREE.Mesh(
+    new THREE.CircleGeometry(0.55, 20),
+    new THREE.MeshStandardMaterial({ color: 0x2244aa, roughness: 0.02, metalness: 0.4, transparent: true, opacity: 0.75 })
+  );
+  smallPuddle.rotation.x = -Math.PI / 2;
+  smallPuddle.position.set(-2.5, 0.02, -3);
+  smallPuddle.userData.uvReflective = true;
+  scene.add(smallPuddle);
+  puddleMeshes.push(smallPuddle);
 
   // ── Sidewalk props (surfaceY=SW_TOP) ──────────────────────────────────────
-  for (const [x, z] of [[-13, -16.5], [13, -16.5], [-13, 16.5], [13, 16.5]])
-    addTree(scene, x, z, SW_TOP);
+  const treeModels = [models.tree, models.treePine];
+  [[-13, -16.5, 4.6], [13, -16.5, 5.2], [-13, 16.5, 4.8], [13, 16.5, 5.0]]
+    .forEach(([x, z, h], i) => addTree(scene, treeModels[i % 2], x, z, SW_TOP, h, i * 1.3));
+
+  // ── Parked cars along the curbs (road level) ────────────────────────────────
+  addCar(scene, models.car,       -6,    12.7, Math.PI / 2);
+  addCar(scene, models.carPolice,  6.5, -12.7, Math.PI / 2);
+  addCar(scene, models.car,        12.7, -4,   0);
+  addCar(scene, models.carPolice, -12.7,  5,   0);
 
   addFireHydrant(scene, 15, -16.5, SW_TOP);
   addFireHydrant(scene, -15, 16.5, SW_TOP);
@@ -465,4 +672,13 @@ export function buildWorld(scene) {
     peb.position.set((Math.random() - 0.5) * 24, r * 0.5, (Math.random() - 0.5) * 24);
     scene.add(peb);
   }
+
+  // One-shot reflection capture for the puddle (call after lighting/env are set).
+  return {
+    captureReflections(renderer) {
+      for (const m of puddleMeshes) m.visible = false;
+      puddleCube.update(renderer, scene);
+      for (const m of puddleMeshes) m.visible = true;
+    },
+  };
 }

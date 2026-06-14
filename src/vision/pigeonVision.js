@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ─── Pigeon optics ────────────────────────────────────────────────────────────
@@ -194,15 +196,30 @@ export class PigeonVision {
   }
 
   _buildBloom(scene, camera) {
+    const w = window.innerWidth, h = window.innerHeight;
     this._composer = new EffectComposer(this.renderer);
     this._composer.addPass(new RenderPass(scene, camera));
+
+    // Contact occlusion in corners / under cars & awnings.
+    const ssao = new SSAOPass(scene, camera, w, h);
+    ssao.kernelRadius = 6;
+    ssao.minDistance = 0.0025;
+    ssao.maxDistance = 0.06;
+    this._composer.addPass(ssao);
+
+    // Gentle glow on true highlights only (lamps, sun) — not every lit window.
     const bloom = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      0.50,  // strength
-      0.60,  // radius
-      0.70   // threshold — lamps (3.5 emissive) and bright windows (0.8) both bloom
+      new THREE.Vector2(w, h),
+      0.28,  // strength
+      0.5,   // radius
+      0.85   // threshold
     );
     this._composer.addPass(bloom);
+
+    // Very subtle distance haze blur (foreground stays crisp at pigeon eye-level).
+    const bokeh = new BokehPass(scene, camera, { focus: 4.0, aperture: 0.00018, maxblur: 0.0018 });
+    this._composer.addPass(bokeh);
+
     this._composer.addPass(new OutputPass());
   }
 

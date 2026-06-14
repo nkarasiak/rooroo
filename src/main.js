@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { buildWorld, getColliders } from './scene/world.js';
 import { setupLighting } from './scene/lighting.js';
+import { loadModels } from './scene/models.js';
 import { PigeonController } from './pigeon/controller.js';
 import { PigeonVision } from './vision/pigeonVision.js';
 import { PigeonAudio } from './audio/pigeonAudio.js';
@@ -18,9 +19,6 @@ document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xbdd6ee);
 scene.fog = new THREE.FogExp2(0xc0d8f0, 0.007);
-
-buildWorld(scene);
-setupLighting(scene);
 
 // IBL environment map — gives correct reflections to all metallic/specular surfaces
 {
@@ -45,10 +43,17 @@ setupLighting(scene);
 
 const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 0.01, 200);
 
+const models = await loadModels();
+const world = buildWorld(scene, models);
+setupLighting(scene);
+
 const colliders = getColliders();
 const audio = new PigeonAudio();
-const pigeon = new PigeonController(camera, scene, colliders, audio);
+const pigeon = new PigeonController(camera, scene, colliders, audio, models.pigeon);
 const vision = new PigeonVision(renderer, scene, camera);
+
+// Capture puddle reflections once everything (geometry, lighting, env) is in place.
+world.captureReflections(renderer);
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;

@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+import { enableShadows, fitHeight, seatedGroup } from '../scene/models.js';
+
+// Quaternius pigeon authoring faces +Z; rotate so it looks the way the player walks.
+const PIGEON_YAW_OFFSET = -Math.PI;
+const PIGEON_HEIGHT = 0.5;   // world-units, beak-to-foot
 
 const WALK_SPEED = 4.5;
 const FLY_SPEED = 9;
@@ -7,12 +12,11 @@ const GRAVITY = 14;
 const EYE_HEIGHT = 0.28;
 const BODY_RADIUS = 0.22;
 const WORLD_BOUND = 30;
-const WING_FLAP_HZ = 7;
 
 const State = { WALKING: 'WALKING', FLYING: 'FLYING', PECKING: 'PECKING' };
 
 export class PigeonController {
-  constructor(camera, scene, colliders, audio) {
+  constructor(camera, scene, colliders, audio, pigeonModel) {
     this.camera = camera;
     this.scene = scene;
     this.colliders = colliders;  // [{ mesh, aabb }]
@@ -28,18 +32,46 @@ export class PigeonController {
     this.thirdPerson = false;
     this.peckTimer = 0;
     this.bobTime = 0;
-    this.wingTime = 0;
     this.isMoving = false;
     this._surfaceY = 0;   // Y of surface currently standing on
+    this._faceYaw = 0;    // smoothed body heading (radians)
+    this._faceTarget = new THREE.Vector3(0, 0, -1);  // direction body should point
 
     this.keys = new Set();
 
-    this.pigeonMesh = buildPigeonMesh();
-    scene.add(this.pigeonMesh);
-    this.pigeonMesh.visible = false;
+    this._buildPigeon(pigeonModel);
 
     this._setupInput();
     this._updateHUD();
+  }
+
+  // Loaded Quaternius GLB → seated group + animation mixer.
+  _buildPigeon(model) {
+    const inner = model.scene;
+    fitHeight(inner, PIGEON_HEIGHT);
+    enableShadows(inner);
+
+    this.pigeonMesh = seatedGroup(inner);   // origin at feet centre
+    this.pigeonMesh.visible = false;
+    this.scene.add(this.pigeonMesh);
+
+    this.mixer = new THREE.AnimationMixer(inner);
+    this.actions = {};
+    for (const clip of model.animations) {
+      const key = clip.name.replace(/^PigeonALL_/, '');   // 'PigeonALL_Walk' → 'Walk'
+      this.actions[key] = this.mixer.clipAction(clip);
+    }
+    this._currentAction = null;
+    this._setAnim('IdleLoop');
+  }
+
+  // Crossfade to a named clip (no-op if already active or missing).
+  _setAnim(name) {
+    const next = this.actions[name];
+    if (!next || next === this._currentAction) return;
+    next.reset().fadeIn(0.18).play();
+    if (this._currentAction) this._currentAction.fadeOut(0.18);
+    this._currentAction = next;
   }
 
   _setupInput() {
@@ -154,6 +186,10 @@ export class PigeonController {
       this.isMoving = move.lengthSq() > 0;
       if (this.isMoving) this.bobTime += dt * 9;
 
+      // Body faces walk direction when moving, else the look direction.
+      if (this.isMoving) this._faceTarget.set(move.x, 0, move.z);
+      else               this._faceTarget.copy(forward);
+
       this.pos.x += move.x * dt;
       this.pos.z += move.z * dt;
       this._resolveXZ();
@@ -176,22 +212,19 @@ export class PigeonController {
       }
 
     } else {
-      // --- FLY ---
+      // --- FLY --- horizontal steering via WASD (relative to look), Space flaps up
       this.vel.y -= GRAVITY * dt;
-      this.wingTime += dt;
 
-      const flyDir = new THREE.Vector3(
-        -Math.sin(this.yaw) * Math.cos(this.pitch),
-         Math.sin(this.pitch),
-        -Math.cos(this.yaw) * Math.cos(this.pitch)
-      );
+      const wish = new THREE.Vector3();
+      if (this.keys.has('KeyW')) wish.add(forward);
+      if (this.keys.has('KeyS')) wish.addScaledVector(forward, -1);
+      if (this.keys.has('KeyA')) wish.addScaledVector(right, -1);
+      if (this.keys.has('KeyD')) wish.add(right);
 
-      if (this.keys.has('KeyW')) {
-        this.vel.x += (flyDir.x * FLY_SPEED - this.vel.x) * dt * 4;
-        this.vel.z += (flyDir.z * FLY_SPEED - this.vel.z) * dt * 4;
-      } else if (this.keys.has('KeyS')) {
-        this.vel.x *= 1 - dt * 3;
-        this.vel.z *= 1 - dt * 3;
+      if (wish.lengthSq() > 0) {
+        wish.normalize().multiplyScalar(FLY_SPEED);
+        this.vel.x += (wish.x - this.vel.x) * dt * 4;
+        this.vel.z += (wish.z - this.vel.z) * dt * 4;
       } else {
         this.vel.x *= 1 - dt * 1.5;
         this.vel.z *= 1 - dt * 1.5;
@@ -212,29 +245,37 @@ export class PigeonController {
         this._updateHUD();
       }
 
-      // Animate wings (third person)
-      if (this.thirdPerson) {
-        const wings = this.pigeonMesh.userData.wings;
-        const flapAngle = Math.sin(this.wingTime * WING_FLAP_HZ * Math.PI * 2) * 0.55;
-        wings[0].rotation.z =  0.2 + flapAngle;
-        wings[1].rotation.z = -0.2 - flapAngle;
-        // Slight body pitch during flight
-        this.pigeonMesh.rotation.x = Math.max(-0.35, Math.min(0.35, this.pitch * 0.6));
-      }
+      // Body faces flight direction (horizontal velocity, else look dir)
+      if (Math.abs(this.vel.x) + Math.abs(this.vel.z) > 0.5) this._faceTarget.set(this.vel.x, 0, this.vel.z);
+      else this._faceTarget.copy(forward);
+
+      // Subtle body pitch following dive/climb
+      this.pigeonMesh.rotation.x = Math.max(-0.35, Math.min(0.35, this.pitch * 0.6));
     }
 
-    // Reset wing rest position when not flying in 3rd person
-    if (this.state !== State.FLYING && this.thirdPerson) {
-      const wings = this.pigeonMesh.userData.wings;
-      wings[0].rotation.z += (0.2 - wings[0].rotation.z) * 0.15;
-      wings[1].rotation.z += (-0.2 - wings[1].rotation.z) * 0.15;
-      this.pigeonMesh.rotation.x *= 0.9;
-    }
+    // Ease body level when not flying
+    if (this.state !== State.FLYING) this.pigeonMesh.rotation.x *= 0.9;
+
+    // Smoothly turn the body toward its target heading
+    const targetYaw = Math.atan2(this._faceTarget.x, this._faceTarget.z);
+    let d = targetYaw - this._faceYaw;
+    d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;  // wrap to [-π,π]
+    this._faceYaw += d * Math.min(1, dt * 12);
 
     this.pos.x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, this.pos.x));
     this.pos.z = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, this.pos.z));
 
+    this._updateAnimation(dt);
     this._applyCamera();
+  }
+
+  // Pick the clip that matches the current state, then advance the mixer.
+  _updateAnimation(dt) {
+    if (this.state === State.PECKING)      this._setAnim('Peck');
+    else if (this.state === State.FLYING)  this._setAnim('FlyLoop');
+    else if (this.isMoving)                this._setAnim('Walk');
+    else                                   this._setAnim('IdleLoop');
+    this.mixer.update(dt);
   }
 
   _resolveXZ() {
@@ -276,9 +317,8 @@ export class PigeonController {
       this.camera.position.copy(this.pos).add(camOffset);
       this.camera.lookAt(this.pos.clone().setY(this.pos.y + 0.1));
 
-      const meshY = this.pos.y - EYE_HEIGHT * 0.5;
-      this.pigeonMesh.position.set(this.pos.x, meshY, this.pos.z);
-      this.pigeonMesh.rotation.y = this.yaw + Math.PI;
+      this.pigeonMesh.position.set(this.pos.x, this.pos.y - EYE_HEIGHT, this.pos.z);
+      this.pigeonMesh.rotation.y = this._faceYaw + PIGEON_YAW_OFFSET;
     } else {
       this.camera.position.copy(this.pos);
       this.camera.rotation.order = 'YXZ';
@@ -290,60 +330,4 @@ export class PigeonController {
       this.camera.rotation.z = 0;
     }
   }
-}
-
-function buildPigeonMesh() {
-  const group = new THREE.Group();
-
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x8898b2, roughness: 0.55, metalness: 0.05 });
-  // Neck gets iridescent green-purple tinge (city pigeon chest)
-  const neckMat = new THREE.MeshStandardMaterial({
-    color: 0x4a7060, roughness: 0.4, metalness: 0.1,
-    emissive: 0x1a4020, emissiveIntensity: 0.45,
-  });
-  const headMat = new THREE.MeshStandardMaterial({ color: 0x7a8ea8, roughness: 0.5, metalness: 0.04 });
-  const beakMat = new THREE.MeshStandardMaterial({ color: 0xb89840, roughness: 0.45, metalness: 0 });
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0x6a7888, roughness: 0.65, metalness: 0.02 });
-  const legMat  = new THREE.MeshStandardMaterial({ color: 0xcc7766, roughness: 0.55, metalness: 0 });
-  const tailMat = new THREE.MeshStandardMaterial({ color: 0x708098, roughness: 0.7, metalness: 0 });
-
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), bodyMat);
-  body.scale.set(1, 0.75, 1.3);
-  group.add(body);
-
-  const neck = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), neckMat);
-  neck.position.set(0, 0.12, 0.22);
-  group.add(neck);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 7), headMat);
-  head.position.set(0, 0.22, 0.3);
-  group.add(head);
-
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.1, 6), beakMat);
-  beak.rotation.x = Math.PI / 2;
-  beak.position.set(0, 0.22, 0.42);
-  group.add(beak);
-
-  const wings = [];
-  for (const side of [-1, 1]) {
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.04, 0.22), wingMat);
-    wing.position.set(side * 0.25, 0, 0);
-    wing.rotation.z = side * 0.2;
-    group.add(wing);
-    wings.push(wing);
-  }
-  group.userData.wings = wings;
-
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.15), tailMat);
-  tail.position.set(0, -0.02, -0.22);
-  tail.rotation.x = 0.3;
-  group.add(tail);
-
-  for (const lx of [-0.06, 0.06]) {
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.14, 5), legMat);
-    leg.position.set(lx, -0.21, 0.05);
-    group.add(leg);
-  }
-
-  return group;
 }
